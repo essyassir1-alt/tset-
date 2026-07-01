@@ -1,0 +1,17 @@
+{
+  "accounts": {
+    "steam": [
+      {
+        "name": "Steam Account",
+        "email": "essyassirtrsr@gmail.com",
+        "password": "safyas",
+        "notes": "Steam Account"
+      }
+    ],
+    "netflix": [],
+    "spotify": [],
+    "discord": [],
+    "other": []
+  },
+  "invites": {}
+}
