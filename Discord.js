@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionsBitField } = require('discord.js');
+const { Client, Intents, MessageEmbed, MessageActionRow, MessageButton, MessageAttachment } = require('discord.js');
 const fs = require('fs');
 require('dotenv').config();
 
@@ -6,8 +6,6 @@ require('dotenv').config();
 // CONFIGURATION
 // ============================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const GUILD_ID = process.env.GUILD_ID;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID || "1511853901937119322";
 
 if (!BOT_TOKEN) {
@@ -75,12 +73,11 @@ function saveData() {
 // ============================================
 const client = new Client({
     intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildInvites
+        Intents.FLAGS.GUILDS,
+        Intents.FLAGS.GUILD_MEMBERS,
+        Intents.FLAGS.GUILD_MESSAGES,
+        Intents.FLAGS.GUILD_MESSAGE_REACTIONS,
+        Intents.FLAGS.GUILD_INVITES
     ]
 });
 
@@ -89,7 +86,7 @@ const client = new Client({
 // ============================================
 function isStaff(member) {
     if (!member) return false;
-    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
+    if (member.hasPermission('ADMINISTRATOR')) return true;
     if (STAFF_ROLE_ID && member.roles.cache.has(STAFF_ROLE_ID)) return true;
     return false;
 }
@@ -111,10 +108,6 @@ function getTotalAccounts() {
     return total;
 }
 
-function getAccountsByType(type) {
-    return accounts[type] || [];
-}
-
 function getInviteCount(userId) {
     return invites[userId] || 0;
 }
@@ -124,81 +117,8 @@ function addInvite(userId) {
     saveData();
 }
 
-function resetInvites(userId) {
-    invites[userId] = 0;
-    saveData();
-}
-
 // ============================================
-// ACCOUNT DISTRIBUTION
-// ============================================
-async function giveAccount(user, type, channel) {
-    const accountType = type || 'any';
-    let availableAccounts = [];
-    
-    if (accountType === 'any') {
-        for (const type in accounts) {
-            availableAccounts = availableAccounts.concat(accounts[type].map(acc => ({ ...acc, type })));
-        }
-    } else {
-        availableAccounts = accounts[accountType] || [];
-    }
-    
-    if (availableAccounts.length === 0) {
-        const embed = new EmbedBuilder()
-            .setColor(0xEF4444)
-            .setTitle('❌ No Accounts Available')
-            .setDescription(`There are no ${accountType === 'any' ? '' : accountType} accounts available at the moment.`)
-            .setTimestamp();
-        await channel.send({ embeds: [embed] });
-        return false;
-    }
-    
-    const account = availableAccounts[0];
-    const originalType = account.type || getAccountTypeFromName(account.name);
-    
-    if (accountType === 'any') {
-        const index = accounts[originalType].findIndex(a => a.email === account.email && a.password === account.password);
-        if (index !== -1) {
-            accounts[originalType].splice(index, 1);
-        }
-    } else {
-        const index = accounts[accountType].findIndex(a => a.email === account.email && a.password === account.password);
-        if (index !== -1) {
-            accounts[accountType].splice(index, 1);
-        }
-    }
-    
-    saveData();
-    
-    const embed = new EmbedBuilder()
-        .setColor(0x22C55E)
-        .setTitle(`🎉 You Received a ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'} Account!`)
-        .setDescription(`**${account.name || 'Account'}**`)
-        .addFields(
-            { name: '📧 Email/Username', value: account.email, inline: true },
-            { name: '🔑 Password', value: account.password, inline: true },
-            { name: '📝 Notes', value: account.notes || 'No additional notes', inline: false }
-        )
-        .setFooter({ text: `Type: ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'}` })
-        .setTimestamp();
-    
-    try {
-        await user.send({ embeds: [embed] });
-        return true;
-    } catch (error) {
-        const failEmbed = new EmbedBuilder()
-            .setColor(0xEF4444)
-            .setTitle('❌ Cannot Send DM')
-            .setDescription(`${user}, please enable DMs to receive your account!`)
-            .setTimestamp();
-        await channel.send({ embeds: [failEmbed] });
-        return false;
-    }
-}
-
-// ============================================
-// COMMAND HANDLER (Using - prefix instead of /)
+// COMMAND HANDLER
 // ============================================
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -206,11 +126,11 @@ client.on('messageCreate', async (message) => {
     
     const args = message.content.slice(1).trim().split(/ +/);
     const cmd = args.shift().toLowerCase();
-    const { member, channel, guild, author } = message;
+    const { member, channel, author } = message;
     
     // ========== -stoke ==========
     if (cmd === 'stoke') {
-        const embed = new EmbedBuilder()
+        const embed = new MessageEmbed()
             .setColor(0x5865F2)
             .setTitle('📊 Account Stock')
             .setDescription('Current available accounts:')
@@ -237,7 +157,7 @@ client.on('messageCreate', async (message) => {
         
         const accountsData = args.join(' ');
         if (!accountsData) {
-            return message.reply('❌ Usage: `-add name, email, password, notes`\nExample: `-add Steam Account, email@example.com, pass123, Premium`\n\nYou can add multiple accounts by putting each on a new line.');
+            return message.reply('❌ Usage: `-add name, email, password, notes`\nExample: `-add Steam Account, email@example.com, pass123, Premium`');
         }
         
         let addedCount = 0;
@@ -260,7 +180,7 @@ client.on('messageCreate', async (message) => {
         
         saveData();
         
-        const embed = new EmbedBuilder()
+        const embed = new MessageEmbed()
             .setColor(0x22C55E)
             .setTitle('✅ Accounts Added')
             .setDescription(`Successfully added **${addedCount}** accounts!`)
@@ -279,7 +199,7 @@ client.on('messageCreate', async (message) => {
         const inviteCount = getInviteCount(author.id);
         
         if (inviteCount < 2) {
-            const embed = new EmbedBuilder()
+            const embed = new MessageEmbed()
                 .setColor(0xEF4444)
                 .setTitle('❌ Not Enough Invites')
                 .setDescription(`You need **2 invites** to claim an account!\nYou currently have **${inviteCount}** invites.\n\nInvite more people to earn invites!`)
@@ -298,7 +218,7 @@ client.on('messageCreate', async (message) => {
         }
         
         if (availableAccounts.length === 0) {
-            const embed = new EmbedBuilder()
+            const embed = new MessageEmbed()
                 .setColor(0xEF4444)
                 .setTitle('❌ No Accounts Available')
                 .setDescription(`There are no ${type === 'any' ? '' : type} accounts available at the moment.`)
@@ -326,7 +246,7 @@ client.on('messageCreate', async (message) => {
         }
         saveData();
         
-        const embed = new EmbedBuilder()
+        const embed = new MessageEmbed()
             .setColor(0x22C55E)
             .setTitle(`🎉 You Received a ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'} Account!`)
             .setDescription(`**${account.name || 'Account'}**`)
@@ -359,7 +279,7 @@ client.on('messageCreate', async (message) => {
         
         const inviteCount = getInviteCount(target.id);
         
-        const embed = new EmbedBuilder()
+        const embed = new MessageEmbed()
             .setColor(0x5865F2)
             .setTitle('📨 Invite Count')
             .setDescription(`${target} has **${inviteCount}** invite${inviteCount !== 1 ? 's' : ''}.`)
@@ -376,7 +296,7 @@ client.on('messageCreate', async (message) => {
     
     // ========== -help ==========
     if (cmd === 'help') {
-        const embed = new EmbedBuilder()
+        const embed = new MessageEmbed()
             .setColor(0x5865F2)
             .setTitle('📋 Account Giveaway Bot Commands')
             .setDescription('**Prefix:** `-`')
@@ -417,7 +337,7 @@ client.on('guildMemberAdd', async (member) => {
             
             const inviteCount = getInviteCount(usedInvite.inviter.id);
             if (inviteCount >= 2) {
-                const embed = new EmbedBuilder()
+                const embed = new MessageEmbed()
                     .setColor(0x22C55E)
                     .setTitle('🎉 You Earned an Invite!')
                     .setDescription(`You now have **${inviteCount}** invites!\n\nYou can claim an account with **2 invites**.\n\nUse \`-claim\` to claim your account!`)
@@ -428,7 +348,7 @@ client.on('guildMemberAdd', async (member) => {
                     console.log(`Could not DM ${usedInvite.inviter.tag}`);
                 }
             } else {
-                const embed = new EmbedBuilder()
+                const embed = new MessageEmbed()
                     .setColor(0x5865F2)
                     .setTitle('📨 You Earned an Invite!')
                     .setDescription(`You now have **${inviteCount}** invites.\n\nNeed **2 invites** to claim an account.\n\nKeep inviting! 🎯`)
