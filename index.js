@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionsBitField, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionsBitField, Partials, VoiceChannel } = require('discord.js');
 const fs = require('fs');
 require('dotenv').config();
 
@@ -9,6 +9,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID || "1511853901937119322";
+const VOICE_REWARD_TIME = 2 * 60 * 60 * 1000; // 2 ساعات بالمللي ثانية
 
 // عدد الدعوات المطلوبة للحصول على حساب
 const INVITES_NEEDED = 5;
@@ -34,14 +35,15 @@ const ACCOUNT_TYPES = {
 
 // Data structure
 let accounts = {
-    steam: [],
-    netflix: [],
-    spotify: [],
-    discord: [],
-    other: []
+    steam: [],     // { name, email, password, notes }
+    netflix: [],   // { name, link, notes }
+    spotify: [],   // { name, link, notes }
+    discord: [],   // { name, link, notes }
+    other: []      // { name, link, notes }
 };
 
 let invites = {};
+let voiceTracking = {}; // { userId: { startTime, channelId, accountClaimed } }
 
 // ============================================
 // FILE FUNCTIONS
@@ -52,6 +54,7 @@ function loadData() {
             const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
             accounts = data.accounts || accounts;
             invites = data.invites || invites;
+            voiceTracking = data.voiceTracking || {};
             console.log('📂 Data loaded successfully');
         } else {
             saveData();
@@ -65,7 +68,7 @@ function loadData() {
 
 function saveData() {
     try {
-        const data = { accounts, invites };
+        const data = { accounts, invites, voiceTracking };
         fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
         console.log('💾 Data saved successfully');
     } catch (error) {
@@ -83,7 +86,8 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildInvites
+        GatewayIntentBits.GuildInvites,
+        GatewayIntentBits.GuildVoiceStates
     ],
     partials: [Partials.Channel, Partials.Message]
 });
@@ -136,16 +140,25 @@ function resetInvites(userId) {
 // ============================================
 // ACCOUNT DISTRIBUTION
 // ============================================
-async function giveAccount(user, type, channel) {
+async function giveAccount(user, type, channel, fromVoice = false) {
     const accountType = type || 'any';
     let availableAccounts = [];
+    let isSteam = false;
     
     if (accountType === 'any') {
+        // جمع جميع الحسابات
         for (const type in accounts) {
-            availableAccounts = availableAccounts.concat(accounts[type].map(acc => ({ ...acc, type })));
+            const accountsWithType = accounts[type].map(acc => ({ ...acc, type }));
+            availableAccounts = availableAccounts.concat(accountsWithType);
         }
     } else {
         availableAccounts = accounts[accountType] || [];
+        isSteam = accountType === 'steam';
+    }
+    
+    // فلترة حسب النوع
+    if (accountType !== 'any') {
+        availableAccounts = availableAccounts.map(acc => ({ ...acc, type: accountType }));
     }
     
     if (availableAccounts.length === 0) {
@@ -161,13 +174,26 @@ async function giveAccount(user, type, channel) {
     const account = availableAccounts[0];
     const originalType = account.type || getAccountTypeFromName(account.name);
     
+    // إزالة الحساب من التخزين
     if (accountType === 'any') {
-        const index = accounts[originalType].findIndex(a => a.email === account.email && a.password === account.password);
+        const index = accounts[originalType].findIndex(a => {
+            if (originalType === 'steam') {
+                return a.email === account.email && a.password === account.password;
+            } else {
+                return a.link === account.link;
+            }
+        });
         if (index !== -1) {
             accounts[originalType].splice(index, 1);
         }
     } else {
-        const index = accounts[accountType].findIndex(a => a.email === account.email && a.password === account.password);
+        const index = accounts[accountType].findIndex(a => {
+            if (accountType === 'steam') {
+                return a.email === account.email && a.password === account.password;
+            } else {
+                return a.link === account.link;
+            }
+        });
         if (index !== -1) {
             accounts[accountType].splice(index, 1);
         }
@@ -175,17 +201,26 @@ async function giveAccount(user, type, channel) {
     
     saveData();
     
+    // بناء الرسالة حسب نوع الحساب
     const embed = new EmbedBuilder()
         .setColor(0x22C55E)
         .setTitle(`🎉 You Received a ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'} Account!`)
         .setDescription(`**${account.name || 'Account'}**`)
-        .addFields(
-            { name: '📧 Email/Username', value: account.email, inline: true },
-            { name: '🔑 Password', value: account.password, inline: true },
-            { name: '📝 Notes', value: account.notes || 'No additional notes', inline: false }
-        )
-        .setFooter({ text: `Type: ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'}` })
+        .setFooter({ text: `Type: ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'}${fromVoice ? ' | Voice Reward' : ''}` })
         .setTimestamp();
+    
+    if (originalType === 'steam') {
+        embed.addFields(
+            { name: '📧 Email', value: account.email || 'N/A', inline: true },
+            { name: '🔑 Password', value: account.password || 'N/A', inline: true },
+            { name: '📝 Notes', value: account.notes || 'No additional notes', inline: false }
+        );
+    } else {
+        embed.addFields(
+            { name: '🔗 Link', value: account.link || 'N/A', inline: true },
+            { name: '📝 Notes', value: account.notes || 'No additional notes', inline: false }
+        );
+    }
     
     try {
         await user.send({ embeds: [embed] });
@@ -199,6 +234,21 @@ async function giveAccount(user, type, channel) {
         await channel.send({ embeds: [failEmbed] });
         return false;
     }
+}
+
+// ============================================
+// VOICE REWARD SYSTEM
+// ============================================
+async function checkVoiceReward(userId) {
+    const userData = voiceTracking[userId];
+    if (!userData) return false;
+    if (userData.accountClaimed) return false;
+    
+    const timeSpent = Date.now() - userData.startTime;
+    if (timeSpent >= VOICE_REWARD_TIME) {
+        return true;
+    }
+    return false;
 }
 
 // ============================================
@@ -241,7 +291,7 @@ client.on('messageCreate', async (message) => {
         
         const fullMessage = args.join(' ');
         if (!fullMessage) {
-            return message.reply(`❌ Usage: \`-add name, email, password, notes\`\nExample: \`-add Steam Account, email@example.com, pass123, Premium\``);
+            return message.reply(`❌ Usage:\n• Steam: \`-add steam, name, email, password, notes\`\n• Other: \`-add type, name, link, notes\`\n\nTypes: steam, netflix, spotify, discord, other\nExample Steam: \`-add steam, Steam Account, email@gmail.com, pass123, Premium\`\nExample Other: \`-add netflix, Netflix Account, https://netflix.com/invite/xxx, 4K Quality\``);
         }
         
         let addedCount = 0;
@@ -254,21 +304,45 @@ client.on('messageCreate', async (message) => {
         
         for (const line of lines) {
             const parts = line.split(',').map(p => p.trim());
-            if (parts.length < 3) continue;
+            if (parts.length < 3) {
+                continue;
+            }
             
-            const name = parts[0];
-            const email = parts[1];
-            const password = parts[2];
-            const notes = parts[3] || '';
-            const type = getAccountTypeFromName(name);
+            const type = parts[0].toLowerCase();
+            const name = parts[1];
             
-            const account = { name, email, password, notes };
-            accounts[type].push(account);
-            addedCount++;
+            if (type === 'steam') {
+                // Steam: name, email, password, notes
+                const email = parts[2] || '';
+                const password = parts[3] || '';
+                const notes = parts[4] || '';
+                
+                if (!email || !password) {
+                    console.log(`❌ Skipping: missing email or password for ${name}`);
+                    continue;
+                }
+                
+                const account = { name, email, password, notes };
+                accounts.steam.push(account);
+                addedCount++;
+            } else if (['netflix', 'spotify', 'discord', 'other'].includes(type)) {
+                // Other: name, link, notes
+                const link = parts[2] || '';
+                const notes = parts[3] || '';
+                
+                if (!link) {
+                    console.log(`❌ Skipping: missing link for ${name}`);
+                    continue;
+                }
+                
+                const account = { name, link, notes };
+                accounts[type].push(account);
+                addedCount++;
+            }
         }
         
         if (addedCount === 0) {
-            return message.reply('❌ No valid accounts found! Please use format: `name, email, password, notes`');
+            return message.reply('❌ No valid accounts found! Please check the format.');
         }
         
         saveData();
@@ -304,10 +378,12 @@ client.on('messageCreate', async (message) => {
         let availableAccounts = [];
         if (type === 'any') {
             for (const t in accounts) {
-                availableAccounts = availableAccounts.concat(accounts[t].map(acc => ({ ...acc, type: t })));
+                const accountsWithType = accounts[t].map(acc => ({ ...acc, type: t }));
+                availableAccounts = availableAccounts.concat(accountsWithType);
             }
         } else {
             availableAccounts = accounts[type] || [];
+            availableAccounts = availableAccounts.map(acc => ({ ...acc, type }));
         }
         
         if (availableAccounts.length === 0) {
@@ -323,43 +399,7 @@ client.on('messageCreate', async (message) => {
         invites[author.id] = inviteCount - INVITES_NEEDED;
         saveData();
         
-        const account = availableAccounts[0];
-        const originalType = account.type || getAccountTypeFromName(account.name);
-        
-        if (type === 'any') {
-            const index = accounts[originalType].findIndex(a => a.email === account.email && a.password === account.password);
-            if (index !== -1) {
-                accounts[originalType].splice(index, 1);
-            }
-        } else {
-            const index = accounts[type].findIndex(a => a.email === account.email && a.password === account.password);
-            if (index !== -1) {
-                accounts[type].splice(index, 1);
-            }
-        }
-        saveData();
-        
-        const embed = new EmbedBuilder()
-            .setColor(0x22C55E)
-            .setTitle(`🎉 You Received a ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'} Account!`)
-            .setDescription(`**${account.name || 'Account'}**`)
-            .addFields(
-                { name: '📧 Email/Username', value: account.email, inline: true },
-                { name: '🔑 Password', value: account.password, inline: true },
-                { name: '📝 Notes', value: account.notes || 'No additional notes', inline: false }
-            )
-            .setFooter({ text: `Type: ${ACCOUNT_TYPES[originalType]?.name || 'Unknown'} | Invites used: ${INVITES_NEEDED}` })
-            .setTimestamp();
-        
-        await message.reply(`✅ Account sent to your DMs! Check your messages. (Used ${INVITES_NEEDED} invites)`);
-        
-        try {
-            await author.send({ embeds: [embed] });
-        } catch (error) {
-            await message.reply('❌ I cannot send you a DM. Please enable DMs and try again.');
-            invites[author.id] = inviteCount;
-            saveData();
-        }
+        await giveAccount(author, type, channel);
         return;
     }
     
@@ -387,6 +427,83 @@ client.on('messageCreate', async (message) => {
         return;
     }
     
+    // ========== -clear ==========
+    if (cmd === 'clear') {
+        if (!isStaff(member)) {
+            return message.reply('❌ Only staff members can clear accounts!');
+        }
+        
+        const confirmEmbed = new EmbedBuilder()
+            .setColor(0xEF4444)
+            .setTitle('⚠️ Confirm Clear All Accounts')
+            .setDescription(`⚠️ **WARNING:** This will delete **ALL** accounts from the stock!\n\n📊 Current Stock:\n🎮 Steam: ${accounts.steam.length}\n📺 Netflix: ${accounts.netflix.length}\n🎵 Spotify: ${accounts.spotify.length}\n💬 Discord: ${accounts.discord.length}\n📦 Other: ${accounts.other.length}\n\n**Total: ${getTotalAccounts()} accounts**\n\nClick ✅ to confirm or ❌ to cancel.`)
+            .setTimestamp();
+        
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder().setCustomId('confirm_clear').setLabel('✅ Confirm').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('cancel_clear').setLabel('❌ Cancel').setStyle(ButtonStyle.Secondary)
+            );
+        
+        const confirmMsg = await message.reply({ embeds: [confirmEmbed], components: [row] });
+        
+        const filter = (i) => i.user.id === message.author.id;
+        const collector = confirmMsg.createMessageComponentCollector({ filter, time: 30000, max: 1 });
+        
+        collector.on('collect', async (interaction) => {
+            if (interaction.customId === 'confirm_clear') {
+                const beforeCount = getTotalAccounts();
+                
+                accounts.steam = [];
+                accounts.netflix = [];
+                accounts.spotify = [];
+                accounts.discord = [];
+                accounts.other = [];
+                
+                saveData();
+                
+                await interaction.update({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor(0x22C55E)
+                            .setTitle('✅ All Accounts Cleared')
+                            .setDescription(`Successfully deleted **${beforeCount}** accounts from the stock!`)
+                            .setTimestamp()
+                    ],
+                    components: []
+                });
+            } else {
+                await interaction.update({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor(0x5865F2)
+                            .setTitle('❌ Operation Cancelled')
+                            .setDescription('No accounts were deleted.')
+                            .setTimestamp()
+                    ],
+                    components: []
+                });
+            }
+        });
+        
+        collector.on('end', async (collected) => {
+            if (collected.size === 0) {
+                await confirmMsg.edit({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor(0xEF4444)
+                            .setTitle('⏰ Timeout')
+                            .setDescription('Clear operation timed out. No accounts were deleted.')
+                            .setTimestamp()
+                    ],
+                    components: []
+                });
+            }
+        });
+        
+        return;
+    }
+    
     // ========== -help ==========
     if (cmd === 'help') {
         const embed = new EmbedBuilder()
@@ -395,14 +512,17 @@ client.on('messageCreate', async (message) => {
             .setDescription('**Prefix:** `-`')
             .addFields(
                 { name: '📊 Stock', value: '`-stoke` - Show available accounts', inline: false },
-                { name: '➕ Add', value: '`-add name, email, password, notes` - Add accounts (Staff only)', inline: false },
+                { name: '➕ Add Steam', value: '`-add steam, name, email, password, notes` - Add Steam account (Staff only)', inline: false },
+                { name: '➕ Add Other', value: '`-add type, name, link, notes` - Add other account (Staff only)', inline: false },
                 { name: '🎯 Claim', value: '`-claim [type]` - Claim an account (' + INVITES_NEEDED + ' invites required)', inline: false },
                 { name: '📨 Invites', value: '`-invites [@user]` - Check invite count', inline: false },
+                { name: '🗑️ Clear', value: '`-clear` - Delete ALL accounts (Staff only)', inline: false },
+                { name: '🎤 Voice Reward', value: 'Stay in voice channel for **2 hours** to get a free account!', inline: false },
                 { name: 'ℹ️ Help', value: '`-help` - Show this message', inline: false }
             )
             .addFields(
-                { name: '📦 Account Types', value: '🎮 Steam | 📺 Netflix | 🎵 Spotify | 💬 Discord | 📦 Other', inline: false },
-                { name: '🎯 How It Works', value: '• Each invite = 1 point\n• ' + INVITES_NEEDED + ' points = 1 account\n• Accounts sent via DM', inline: false }
+                { name: '📦 Account Types', value: '🎮 Steam (email+pass) | 📺 Netflix (link) | 🎵 Spotify (link) | 💬 Discord (link) | 📦 Other (link)', inline: false },
+                { name: '🎯 How It Works', value: '• Each invite = 1 point\n• ' + INVITES_NEEDED + ' points = 1 account\n• 2 hours in voice = 1 account\n• Accounts sent via DM', inline: false }
             )
             .setFooter({ text: `Requested by ${author.tag}` })
             .setTimestamp();
@@ -411,6 +531,108 @@ client.on('messageCreate', async (message) => {
         return;
     }
 });
+
+// ============================================
+// VOICE STATE TRACKING
+// ============================================
+client.on('voiceStateUpdate', async (oldState, newState) => {
+    const userId = newState.member?.id || oldState.member?.id;
+    if (!userId) return;
+    
+    // User joined a voice channel
+    if (newState.channelId && !oldState.channelId) {
+        // Check if user already has tracking
+        if (!voiceTracking[userId]) {
+            voiceTracking[userId] = {
+                startTime: Date.now(),
+                channelId: newState.channelId,
+                accountClaimed: false
+            };
+            saveData();
+            console.log(`🎤 ${newState.member?.user?.tag || userId} joined voice channel. Tracking started.`);
+        }
+    }
+    
+    // User left a voice channel
+    if (oldState.channelId && !newState.channelId) {
+        if (voiceTracking[userId]) {
+            // Check if user earned a reward
+            const timeSpent = Date.now() - voiceTracking[userId].startTime;
+            if (timeSpent >= VOICE_REWARD_TIME && !voiceTracking[userId].accountClaimed) {
+                // User earned an account
+                const user = await client.users.fetch(userId).catch(() => null);
+                if (user) {
+                    // Check if there are any accounts available
+                    const totalAccounts = getTotalAccounts();
+                    if (totalAccounts > 0) {
+                        // Try to find a channel to send the message (use DM or a public channel)
+                        try {
+                            const success = await giveAccount(user, 'any', { send: (data) => user.send(data) }, true);
+                            if (success) {
+                                voiceTracking[userId].accountClaimed = true;
+                                saveData();
+                                console.log(`🎉 ${user.tag} earned a voice reward account!`);
+                            }
+                        } catch (error) {
+                            console.error(`Failed to give voice reward to ${user.tag}:`, error.message);
+                        }
+                    } else {
+                        console.log(`⚠️ No accounts available for voice reward to ${user.tag}`);
+                    }
+                }
+            }
+            
+            // Clean up tracking (remove after 10 minutes or if account claimed)
+            setTimeout(() => {
+                if (voiceTracking[userId] && voiceTracking[userId].accountClaimed) {
+                    delete voiceTracking[userId];
+                    saveData();
+                }
+            }, 10 * 60 * 1000);
+            
+            console.log(`🎤 ${newState.member?.user?.tag || userId} left voice channel. Time spent: ${(timeSpent / 60000).toFixed(0)} minutes.`);
+        }
+    }
+    
+    // User switched voice channels
+    if (newState.channelId && oldState.channelId && newState.channelId !== oldState.channelId) {
+        if (voiceTracking[userId]) {
+            voiceTracking[userId].channelId = newState.channelId;
+            saveData();
+        }
+    }
+});
+
+// ============================================
+// CHECK VOICE REWARDS PERIODICALLY
+// ============================================
+setInterval(async () => {
+    const now = Date.now();
+    for (const [userId, data] of Object.entries(voiceTracking)) {
+        if (data.accountClaimed) continue;
+        
+        const timeSpent = now - data.startTime;
+        if (timeSpent >= VOICE_REWARD_TIME) {
+            const user = await client.users.fetch(userId).catch(() => null);
+            if (user) {
+                const totalAccounts = getTotalAccounts();
+                if (totalAccounts > 0) {
+                    // Find a channel to send the message (use DM)
+                    try {
+                        const success = await giveAccount(user, 'any', { send: (data) => user.send(data) }, true);
+                        if (success) {
+                            voiceTracking[userId].accountClaimed = true;
+                            saveData();
+                            console.log(`🎉 ${user.tag} earned a voice reward account! (Checked via interval)`);
+                        }
+                    } catch (error) {
+                        console.error(`Failed to give voice reward to ${user.tag}:`, error.message);
+                    }
+                }
+            }
+        }
+    }
+}, 60000); // Check every minute
 
 // ============================================
 // INVITE TRACKING
@@ -463,25 +685,27 @@ client.on('guildMemberAdd', async (member) => {
 // ============================================
 client.once('ready', async () => {
     console.log(`✨ ${client.user.tag} is online!`);
-    console.log(`📊 Account Giveaway Bot - Powered by Invites`);
+    console.log(`📊 Account Giveaway Bot - Powered by Invites & Voice`);
     console.log(`🎯 ${INVITES_NEEDED} invites needed for 1 account`);
+    console.log(`🎤 ${VOICE_REWARD_TIME / (60 * 60 * 1000)} hours in voice = 1 account`);
     console.log(`📦 Total Accounts: ${getTotalAccounts()}`);
-    console.log(`🎮 Steam: ${accounts.steam.length}`);
-    console.log(`📺 Netflix: ${accounts.netflix.length}`);
-    console.log(`🎵 Spotify: ${accounts.spotify.length}`);
-    console.log(`💬 Discord: ${accounts.discord.length}`);
-    console.log(`📦 Other: ${accounts.other.length}`);
+    console.log(`🎮 Steam (email+pass): ${accounts.steam.length}`);
+    console.log(`📺 Netflix (link): ${accounts.netflix.length}`);
+    console.log(`🎵 Spotify (link): ${accounts.spotify.length}`);
+    console.log(`💬 Discord (link): ${accounts.discord.length}`);
+    console.log(`📦 Other (link): ${accounts.other.length}`);
     console.log('');
     console.log('📝 Commands:');
-    console.log('  -stoke    - Show account stock');
-    console.log('  -add      - Add accounts (staff only)');
-    console.log('  -claim    - Claim an account');
-    console.log('  -invites  - Check invite count');
-    console.log('  -help     - Show help');
+    console.log('  -stoke      - Show account stock');
+    console.log('  -add        - Add accounts (staff only)');
+    console.log('  -claim      - Claim an account');
+    console.log('  -invites    - Check invite count');
+    console.log('  -clear      - Delete ALL accounts (staff only)');
+    console.log('  -help       - Show help');
     console.log('');
     console.log('🚀 Bot is ready!');
     
-    client.user.setActivity(`-claim | ${INVITES_NEEDED} invites = 1 account`, { type: 3 });
+    client.user.setActivity(`-claim | ${INVITES_NEEDED} invites = 1 account | 2h voice = 1 account`, { type: 3 });
 });
 
 // ============================================
