@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionsBitField, Partials } = require('discord.js');
 const fs = require('fs');
 require('dotenv').config();
 
@@ -53,7 +53,6 @@ function loadData() {
             accounts = data.accounts || accounts;
             invites = data.invites || invites;
             console.log('📂 Data loaded successfully');
-            console.log('📊 Current accounts:', JSON.stringify(accounts, null, 2));
         } else {
             saveData();
             console.log('📂 New data file created');
@@ -85,7 +84,8 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
         GatewayIntentBits.GuildInvites
-    ]
+    ],
+    partials: [Partials.Channel, Partials.Message]
 });
 
 // ============================================
@@ -212,12 +212,8 @@ client.on('messageCreate', async (message) => {
     const cmd = args.shift().toLowerCase();
     const { member, channel, guild, author } = message;
     
-    console.log(`📝 Command received: ${cmd} from ${author.tag}`);
-    console.log(`📝 Args: ${args.join(' ')}`);
-    
     // ========== -stoke ==========
     if (cmd === 'stoke') {
-        console.log('📊 Showing stock...');
         const embed = new EmbedBuilder()
             .setColor(0x5865F2)
             .setTitle('📊 Account Stock')
@@ -239,18 +235,13 @@ client.on('messageCreate', async (message) => {
     
     // ========== -add ==========
     if (cmd === 'add') {
-        console.log('➕ Adding accounts...');
-        
         if (!isStaff(member)) {
-            console.log('❌ User is not staff!');
             return message.reply('❌ Only staff members can add accounts!');
         }
         
         const fullMessage = args.join(' ');
-        console.log(`📝 Full message: ${fullMessage}`);
-        
         if (!fullMessage) {
-            return message.reply(`❌ Usage: \`-add name, email, password, notes\`\nExample: \`-add Steam Account, email@example.com, pass123, Premium\`\n\nYou can add multiple accounts by putting each on a new line.`);
+            return message.reply(`❌ Usage: \`-add name, email, password, notes\`\nExample: \`-add Steam Account, email@example.com, pass123, Premium\``);
         }
         
         let addedCount = 0;
@@ -261,25 +252,15 @@ client.on('messageCreate', async (message) => {
             lines = [fullMessage];
         }
         
-        console.log(`📝 Lines to process: ${lines.length}`);
-        
         for (const line of lines) {
             const parts = line.split(',').map(p => p.trim());
-            console.log(`📝 Processing: ${line}`);
-            console.log(`📝 Parts: ${parts}`);
-            
-            if (parts.length < 3) {
-                console.log(`❌ Skipping: not enough parts (${parts.length})`);
-                continue;
-            }
+            if (parts.length < 3) continue;
             
             const name = parts[0];
             const email = parts[1];
             const password = parts[2];
             const notes = parts[3] || '';
             const type = getAccountTypeFromName(name);
-            
-            console.log(`📝 Adding: ${name} | ${email} | ${password} | ${notes} | Type: ${type}`);
             
             const account = { name, email, password, notes };
             accounts[type].push(account);
@@ -302,7 +283,6 @@ client.on('messageCreate', async (message) => {
             .setTimestamp();
         
         await message.reply({ embeds: [embed] });
-        console.log(`✅ Added ${addedCount} accounts successfully!`);
         return;
     }
     
@@ -520,4 +500,3 @@ process.on('uncaughtException', (error) => {
 // ============================================
 loadData();
 client.login(BOT_TOKEN);
-            
